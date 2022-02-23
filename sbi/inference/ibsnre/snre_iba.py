@@ -72,6 +72,7 @@ class SNRE_IB_A(RatioEstimator):
         Args:
             training_batch_size: Training batch size.
             learning_rate: Learning rate for Adam optimizer.
+            lagrange_multiplier:
             validation_fraction: The fraction of data to use for validation.
             stop_after_epochs: The number of epochs to wait for improvement on the
                 validation set before terminating training.
@@ -104,6 +105,59 @@ class SNRE_IB_A(RatioEstimator):
         # Proxy to `super().__call__` to ensure right parameter.
         kwargs = del_entries(locals(), entries=("self", "__class__"))
         return super().train(**kwargs, num_atoms=2)
+
+    def anneal(
+        self,
+        training_batch_size: int = 50,
+        learning_rate: float = 5e-4,
+        lagrange_multiplier: Optional[float] = None,
+        annealing_rate: float = 0.1,
+        validation_fraction: float = 0.1,
+        max_num_epochs: int = 100,
+        clip_max_norm: Optional[float] = 5.0,
+        exclude_invalid_x: bool = True,
+        resume_training: bool = False,
+        discard_prior_samples: bool = False,
+        retrain_from_scratch: bool = False,
+        show_train_summary: bool = False,
+        dataloader_kwargs: Optional[Dict] = None,
+    ) -> nn.Module:
+        r"""Return classifier that approximates the ratio $p(\theta,x)/p(\theta)p(x)$.
+
+        Args:
+            training_batch_size: Training batch size.
+            learning_rate: Learning rate for Adam optimizer.
+            lagrange_multiplier:
+            annealing_rate:
+            validation_fraction: The fraction of data to use for validation.
+            max_num_epochs: Maximum number of epochs to run. If reached, we stop
+                training even when the validation loss is still decreasing.
+            clip_max_norm: Value at which to clip the total gradient norm in order to
+                prevent exploding gradients. Use None for no clipping.
+            exclude_invalid_x: Whether to exclude simulation outputs `x=NaN` or `x=±∞`
+                during training. Expect errors, silent or explicit, when `False`.
+            resume_training: Can be used in case training time is limited, e.g. on a
+                cluster. If `True`, the split between train and validation set, the
+                optimizer, the number of epochs, and the best validation log-prob will
+                be restored from the last time `.train()` was called.
+            discard_prior_samples: Whether to discard samples simulated in round 1, i.e.
+                from the prior. Training may be sped up by ignoring such less targeted
+                samples.
+            retrain_from_scratch: Whether to retrain the conditional density
+                estimator for the posterior from scratch each round.
+            show_train_summary: Whether to print the number of epochs and validation
+                loss and leakage after the training.
+            dataloader_kwargs: Additional or updated kwargs to be passed to the training
+                and validation dataloaders (like, e.g., a collate_fn)
+
+        Returns:
+            Classifier that approximates the ratio $p(\theta,x)/p(\theta)p(x)$.
+        """
+
+        # AALR is defined for `num_atoms=2`.
+        # Proxy to `super().__call__` to ensure right parameter.
+        kwargs = del_entries(locals(), entries=("self", "__class__"))
+        return super().anneal(**kwargs, num_atoms=2)
 
     @staticmethod
     def _correction(logits: Tensor, dim: int) -> Tensor:

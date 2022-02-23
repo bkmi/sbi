@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from copy import deepcopy
+from math import exp
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import torch
@@ -202,7 +203,7 @@ class RatioEstimator(NeuralInference, ABC):
             )
             self.epoch, self._val_log_prob = 0, float("-Inf")
 
-        while self.epoch <= max_num_epochs and not self._converged(
+        while self.epoch < max_num_epochs and not self._converged(
             self.epoch, stop_after_epochs
         ):
 
@@ -246,7 +247,176 @@ class RatioEstimator(NeuralInference, ABC):
                         batch[0].to(self._device),
                         batch[1].to(self._device),
                     )
-                    val_losses = self._loss(theta_batch, x_batch, num_atoms, 0.0)
+                    val_losses = self._loss(theta_batch, x_batch, num_atoms, None)
+                    val_log_prob_sum -= val_losses.sum().item()
+                # Take mean over all validation samples.
+                self._val_log_prob = val_log_prob_sum / (
+                    len(val_loader) * val_loader.batch_size
+                )
+                # Log validation log prob for every epoch.
+                self._summary["validation_log_probs"].append(self._val_log_prob)
+
+            self._maybe_show_progress(self._show_progress_bars, self.epoch)
+
+        self._report_convergence_at_end(self.epoch, stop_after_epochs, max_num_epochs)
+
+        # Update summary.
+        self._summary["epochs"].append(self.epoch)
+        self._summary["best_validation_log_probs"].append(self._best_val_log_prob)
+
+        # Update TensorBoard and summary dict.
+        self._summarize(
+            round_=self._round,
+            x_o=None,
+            theta_bank=theta,
+            x_bank=x,
+        )
+
+        # Update description for progress bar.
+        if show_train_summary:
+            print(self._describe_round(self._round, self._summary))
+
+        return deepcopy(self._neural_net)
+
+    def anneal(
+        self,
+        num_atoms: int = 10,
+        training_batch_size: int = 50,
+        learning_rate: float = 5e-4,
+        lagrange_multiplier: Optional[float] = None,
+        annealing_rate: float = 0.1,
+        validation_fraction: float = 0.1,
+        stop_after_epochs: int = 2 ** 31 - 1,
+        max_num_epochs: int = 100,
+        clip_max_norm: Optional[float] = 5.0,
+        exclude_invalid_x: bool = True,
+        resume_training: bool = False,
+        discard_prior_samples: bool = False,
+        retrain_from_scratch: bool = False,
+        show_train_summary: bool = False,
+        dataloader_kwargs: Optional[Dict] = None,
+    ) -> nn.Module:
+        r"""Return classifier that approximates the ratio $p(\theta,x)/p(\theta)p(x)$.
+
+        Args:
+            num_atoms: Number of atoms to use for classification.
+            exclude_invalid_x: Whether to exclude simulation outputs `x=NaN` or `x=±∞`
+                during training. Expect errors, silent or explicit, when `False`.
+            resume_training: Can be used in case training time is limited, e.g. on a
+                cluster. If `True`, the split between train and validation set, the
+                optimizer, the number of epochs, and the best validation log-prob will
+                be restored from the last time `.train()` was called.
+            discard_prior_samples: Whether to discard samples simulated in round 1, i.e.
+                from the prior. Training may be sped up by ignoring such less targeted
+                samples.
+            retrain_from_scratch: Whether to retrain the conditional density
+                estimator for the posterior from scratch each round.
+            dataloader_kwargs: Additional or updated kwargs to be passed to the training
+                and validation dataloaders (like, e.g., a collate_fn)
+
+        Returns:
+            Classifier that approximates the ratio $p(\theta,x)/p(\theta)p(x)$.
+        """
+        assert annealing_rate > 0.0
+        epsilon = 0.01
+        law_of_cooling = lambda x: lagrange_multiplier + (
+            epsilon - lagrange_multiplier
+        ) * exp(-annealing_rate * x)
+
+        # Starting index for the training set (1 = discard round-0 samples).
+        start_idx = int(discard_prior_samples and self._round > 0)
+        # Load data from most recent round.
+        self._round = max(self._data_round_index)
+        theta, x, _ = self.get_simulations(
+            start_idx, exclude_invalid_x, warn_on_invalid=True
+        )
+
+        # Dataset is shared for training and validation loaders.
+        dataset = data.TensorDataset(theta, x)
+
+        train_loader, val_loader = self.get_dataloaders(
+            dataset,
+            training_batch_size,
+            validation_fraction,
+            resume_training,
+            dataloader_kwargs=dataloader_kwargs,
+        )
+
+        clipped_batch_size = min(training_batch_size, len(val_loader))
+
+        num_atoms = clamp_and_warn(
+            "num_atoms", num_atoms, min_val=2, max_val=clipped_batch_size
+        )
+
+        # First round or if retraining from scratch:
+        # Call the `self._build_neural_net` with the rounds' thetas and xs as
+        # arguments, which will build the neural network
+        # This is passed into NeuralPosterior, to create a neural posterior which
+        # can `sample()` and `log_prob()`. The network is accessible via `.net`.
+        if self._neural_net is None or retrain_from_scratch:
+            self._neural_net = self._build_neural_net(
+                theta[self.train_indices], x[self.train_indices]
+            )
+            self._x_shape = x_shape_from_simulation(x)
+
+        self._neural_net.to(self._device)
+
+        if not resume_training:
+            self.optimizer = optim.Adam(
+                list(self._neural_net.parameters()),
+                lr=learning_rate,
+            )
+            self.epoch, self._val_log_prob = 0, float("-Inf")
+
+        while self.epoch < max_num_epochs:
+            # TODO this is a hack
+            # split the function so each internal part is called seperately
+            # then I can set stop_after_epochs to None when unused.
+            self._converged(self.epoch, stop_after_epochs)
+
+            annealed_lagrange_multiplier = law_of_cooling(self.epoch)
+
+            # Train for a single epoch.
+            self._neural_net.train()
+            train_log_probs_sum = 0
+            for batch in train_loader:
+                self.optimizer.zero_grad()
+                theta_batch, x_batch = (
+                    batch[0].to(self._device),
+                    batch[1].to(self._device),
+                )
+
+                train_losses = self._loss(
+                    theta_batch, x_batch, num_atoms, annealed_lagrange_multiplier
+                )
+                train_loss = torch.mean(train_losses)
+                train_log_probs_sum -= train_losses.sum().item()
+
+                train_loss.backward()
+                if clip_max_norm is not None:
+                    clip_grad_norm_(
+                        self._neural_net.parameters(),
+                        max_norm=clip_max_norm,
+                    )
+                self.optimizer.step()
+
+            self.epoch += 1
+
+            train_log_prob_average = train_log_probs_sum / (
+                len(train_loader) * train_loader.batch_size
+            )
+            self._summary["train_log_probs"].append(train_log_prob_average)
+
+            # Calculate validation performance.
+            self._neural_net.eval()
+            val_log_prob_sum = 0
+            with torch.no_grad():
+                for batch in val_loader:
+                    theta_batch, x_batch = (
+                        batch[0].to(self._device),
+                        batch[1].to(self._device),
+                    )
+                    val_losses = self._loss(theta_batch, x_batch, num_atoms, None)
                     val_log_prob_sum -= val_losses.sum().item()
                 # Take mean over all validation samples.
                 self._val_log_prob = val_log_prob_sum / (
@@ -380,10 +550,15 @@ class RatioEstimator(NeuralInference, ABC):
         raise NotImplementedError
 
     def _loss(
-        self, theta: Tensor, x: Tensor, num_atoms: int, lagrange_multiplier: float
+        self,
+        theta: Tensor,
+        x: Tensor,
+        num_atoms: int,
+        lagrange_multiplier: Optional[float],
     ) -> Tensor:
         if lagrange_multiplier is None:
-            raise NotImplementedError()
+            entropy_yw, _, _ = self._loss_terms(theta, x, num_atoms)
+            return torch.mean(entropy_yw, dim=0)
         else:
             return self.convex_combine(
                 *self._loss_terms(theta, x, num_atoms), lagrange_multiplier
