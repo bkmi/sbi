@@ -195,7 +195,7 @@ class RatioEstimator(NeuralInference, ABC):
             )
             self.epoch, self._val_log_prob = 0, float("-Inf")
 
-        while self.epoch <= max_num_epochs and not self._converged(
+        while self.epoch < max_num_epochs and not self._converged(
             self.epoch, stop_after_epochs
         ):
 
