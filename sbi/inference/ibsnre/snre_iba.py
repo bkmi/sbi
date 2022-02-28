@@ -1,7 +1,7 @@
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 import torch
-from torch import Tensor
+from torch import Tensor, nn, ones
 
 from sbi.inference.posteriors.base_posterior import NeuralPosterior
 from sbi.inference.ibsnre.snre_base import RatioEstimator
