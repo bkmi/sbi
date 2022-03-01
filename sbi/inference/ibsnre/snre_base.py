@@ -68,6 +68,17 @@ class RatioEstimator(NeuralInference, ABC):
             show_progress_bars=show_progress_bars,
             **unused_args
         )
+        self._summary = dict(
+            median_observation_distances=[],
+            epochs=[],
+            best_validation_log_probs=[],
+            validation_log_probs=[],
+            validation_objective_log_probs=[],
+            validation_regularizer_log_probs=[],
+            validation_ratio_avg=[],
+            train_log_probs=[],
+            epoch_durations_sec=[],
+        )
 
         # As detailed in the docstring, `density_estimator` is either a string or
         # a callable. The function creating the neural network is attached to
@@ -122,7 +133,7 @@ class RatioEstimator(NeuralInference, ABC):
         num_atoms: int = 10,
         training_batch_size: int = 50,
         learning_rate: float = 5e-4,
-        lagrange_multiplier: Optional[float] = None,
+        lagrange_multiplier: float = 0.0,
         validation_fraction: float = 0.1,
         stop_after_epochs: int = 20,
         max_num_epochs: Optional[int] = None,
@@ -217,7 +228,7 @@ class RatioEstimator(NeuralInference, ABC):
                     batch[1].to(self._device),
                 )
 
-                train_losses = self._loss(
+                _, _, train_losses = self._loss(
                     theta_batch, x_batch, num_atoms, lagrange_multiplier
                 )
                 train_loss = torch.mean(train_losses)
@@ -241,19 +252,34 @@ class RatioEstimator(NeuralInference, ABC):
             # Calculate validation performance.
             self._neural_net.eval()
             val_log_prob_sum = 0
+            val_obj_sum = 0
+            val_reg_sum = 0
+            val_ratio_sum = 0
             with torch.no_grad():
                 for batch in val_loader:
                     theta_batch, x_batch = (
                         batch[0].to(self._device),
                         batch[1].to(self._device),
                     )
-                    val_losses = self._loss(theta_batch, x_batch, num_atoms, None)
+                    val_objective, val_regularizer, val_losses = self._loss(
+                        theta_batch, x_batch, num_atoms, lagrange_multiplier
+                    )
+                    val_ratio = self._neural_net([theta_batch, x_batch])
+
+                    val_ratio_sum += val_ratio.sum().item()
+                    val_obj_sum -= val_objective.sum().item()
+                    val_reg_sum -= val_regularizer.sum().item()
                     val_log_prob_sum -= val_losses.sum().item()
                 # Take mean over all validation samples.
-                self._val_log_prob = val_log_prob_sum / (
-                    len(val_loader) * val_loader.batch_size
-                )
+                n = len(val_loader) * val_loader.batch_size
+                val_ratio_avg = val_ratio_sum / n
+                val_obj_avg = val_obj_sum / n
+                val_reg_avg = val_reg_sum / n
+                self._val_log_prob = val_log_prob_sum / n
                 # Log validation log prob for every epoch.
+                self._summary["validation_ratio_avg"].append(val_ratio_avg)
+                self._summary["validation_objective_log_probs"].append(val_obj_avg)
+                self._summary["validation_regularizer_log_probs"].append(val_reg_avg)
                 self._summary["validation_log_probs"].append(self._val_log_prob)
 
             self._maybe_show_progress(self._show_progress_bars, self.epoch)
@@ -416,7 +442,9 @@ class RatioEstimator(NeuralInference, ABC):
                         batch[0].to(self._device),
                         batch[1].to(self._device),
                     )
-                    val_losses = self._loss(theta_batch, x_batch, num_atoms, None)
+                    val_losses = self._loss(
+                        theta_batch, x_batch, num_atoms, lagrange_multiplier
+                    )
                     val_log_prob_sum -= val_losses.sum().item()
                 # Take mean over all validation samples.
                 self._val_log_prob = val_log_prob_sum / (
@@ -537,10 +565,8 @@ class RatioEstimator(NeuralInference, ABC):
         exp_neg_entropy_zw: Tensor,
         lagrange_multiplier: float,
     ) -> Tensor:
-        return torch.mean(
-            (1 - lagrange_multiplier) * entropy_yw
-            - lagrange_multiplier * (entropy_zw + exp_neg_entropy_zw),
-            dim=0,
+        return (1 - lagrange_multiplier) * entropy_yw - lagrange_multiplier * (
+            entropy_zw + exp_neg_entropy_zw
         )
 
     @abstractmethod
@@ -554,15 +580,19 @@ class RatioEstimator(NeuralInference, ABC):
         theta: Tensor,
         x: Tensor,
         num_atoms: int,
-        lagrange_multiplier: Optional[float],
-    ) -> Tensor:
-        if lagrange_multiplier is None:
-            entropy_yw, _, _ = self._loss_terms(theta, x, num_atoms)
-            return torch.mean(entropy_yw, dim=0)
-        else:
-            return self.convex_combine(
-                *self._loss_terms(theta, x, num_atoms), lagrange_multiplier
-            )
+        lagrange_multiplier: float,
+    ) -> Tuple[Tensor, Tensor, Tensor]:
+        """objective, regularizer, mixed"""
+        entropy_yw, entropy_zw, exp_neg_entropy_zw = self._loss_terms(
+            theta, x, num_atoms
+        )
+        return (
+            entropy_yw,
+            entropy_zw + exp_neg_entropy_zw,
+            self.convex_combine(
+                entropy_yw, entropy_zw, exp_neg_entropy_zw, lagrange_multiplier
+            ),
+        )
 
     def build_posterior(
         self,
