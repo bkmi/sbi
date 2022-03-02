@@ -75,10 +75,13 @@ class RatioEstimator(NeuralInference, ABC):
             validation_log_probs=[],
             validation_objective_log_probs=[],
             validation_regularizer_log_probs=[],
-            validation_ratio_avg=[],
+            validation_log_ratio=[],
             train_log_probs=[],
             epoch_durations_sec=[],
         )
+        self._val_log_ratio = float("-Inf")  # minimize the kl aka this
+        self._val_log_obj = float("-Inf")
+        self._val_log_prob = float("-Inf")
 
         # As detailed in the docstring, `density_estimator` is either a string or
         # a callable. The function creating the neural network is attached to
@@ -127,6 +130,60 @@ class RatioEstimator(NeuralInference, ABC):
         self._data_round_index.append(int(from_round))
 
         return self
+
+    def _converged(self, epoch: int, stop_after_epochs: int) -> bool:
+        """Return whether the training converged yet and save best model state so far.
+
+        Checks for improvement in validation performance over previous epochs.
+
+        Args:
+            epoch: Current epoch in training.
+            stop_after_epochs: How many fruitless epochs to let pass before stopping.
+
+        Returns:
+            Whether the training has stopped improving, i.e. has converged.
+        """
+        converged = False
+
+        assert self._neural_net is not None
+        neural_net = self._neural_net
+
+        # (Re)-start the epoch count with the first epoch or any improvement.
+        if epoch == 0:
+            self._best_val_log_ratio = self._val_log_ratio
+            self._best_val_log_obj = self._val_log_obj
+            self._best_val_log_prob = self._val_log_prob
+            self._epochs_since_last_improvement = 0
+        else:
+            any_improved = False
+
+            if self._val_log_prob > self._best_val_log_prob:
+                self._best_val_log_prob = self._val_log_prob
+                self._epochs_since_last_improvement = 0
+                self._best_model_state_dict_val = deepcopy(neural_net.state_dict())
+                any_improved = True
+
+            if self._val_log_obj > self._best_val_log_obj:
+                self._best_val_log_obj = self._val_log_obj
+                self._epochs_since_last_improvement = 0
+                self._best_model_state_dict_obj = deepcopy(neural_net.state_dict())
+                any_improved = True
+
+            if self._val_log_ratio > self._best_val_log_ratio:
+                self._best_val_log_ratio = self._val_log_ratio
+                self._epochs_since_last_improvement = 0
+                self._best_model_state_dict_ratio = deepcopy(neural_net.state_dict())
+                any_improved = True
+
+            if not any_improved:
+                self._epochs_since_last_improvement += 1
+
+        # If no validation improvement over many epochs, stop training.
+        if self._epochs_since_last_improvement > stop_after_epochs - 1:
+            neural_net.load_state_dict(self._best_model_state_dict_obj)
+            converged = True
+
+        return converged
 
     def train(
         self,
@@ -252,9 +309,9 @@ class RatioEstimator(NeuralInference, ABC):
             # Calculate validation performance.
             self._neural_net.eval()
             val_log_prob_sum = 0
-            val_obj_sum = 0
-            val_reg_sum = 0
-            val_ratio_sum = 0
+            val_log_obj_sum = 0
+            val_log_reg_sum = 0
+            val_log_ratio_sum = 0
             with torch.no_grad():
                 for batch in val_loader:
                     theta_batch, x_batch = (
@@ -266,20 +323,24 @@ class RatioEstimator(NeuralInference, ABC):
                     )
                     val_ratio = self._neural_net([theta_batch, x_batch])
 
-                    val_ratio_sum += val_ratio.sum().item()
-                    val_obj_sum -= val_objective.sum().item()
-                    val_reg_sum -= val_regularizer.sum().item()
+                    val_log_ratio_sum += val_ratio.sum().item()
+                    val_log_obj_sum -= val_objective.sum().item()
+                    val_log_reg_sum -= val_regularizer.sum().item()
                     val_log_prob_sum -= val_losses.sum().item()
                 # Take mean over all validation samples.
                 n = len(val_loader) * val_loader.batch_size
-                val_ratio_avg = val_ratio_sum / n
-                val_obj_avg = val_obj_sum / n
-                val_reg_avg = val_reg_sum / n
+                self._val_log_ratio = val_log_ratio_sum / n
+                self._val_log_obj = val_log_obj_sum / n
+                self._val_log_reg = val_log_reg_sum / n
                 self._val_log_prob = val_log_prob_sum / n
                 # Log validation log prob for every epoch.
-                self._summary["validation_ratio_avg"].append(val_ratio_avg)
-                self._summary["validation_objective_log_probs"].append(val_obj_avg)
-                self._summary["validation_regularizer_log_probs"].append(val_reg_avg)
+                self._summary["validation_log_ratio"].append(self._val_log_ratio)
+                self._summary["validation_objective_log_probs"].append(
+                    self._val_log_obj
+                )
+                self._summary["validation_regularizer_log_probs"].append(
+                    self._val_log_reg
+                )
                 self._summary["validation_log_probs"].append(self._val_log_prob)
 
             self._maybe_show_progress(self._show_progress_bars, self.epoch)

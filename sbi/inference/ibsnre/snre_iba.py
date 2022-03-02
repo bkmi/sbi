@@ -3,8 +3,8 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 import torch
 from torch import Tensor, nn, ones
 
-from sbi.inference.posteriors.base_posterior import NeuralPosterior
 from sbi.inference.ibsnre.snre_base import RatioEstimator
+from sbi.inference.posteriors.base_posterior import NeuralPosterior
 from sbi.types import TensorboardSummaryWriter
 from sbi.utils import del_entries
 
