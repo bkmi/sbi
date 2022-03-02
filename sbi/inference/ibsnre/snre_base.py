@@ -185,6 +185,17 @@ class RatioEstimator(NeuralInference, ABC):
 
         return converged
 
+    def load_best_neural_network(self, model_selection_method: str) -> None:
+        if model_selection_method == "val":
+            self._neural_net.load_state_dict(self._best_model_state_dict_val)
+        elif model_selection_method == "obj":
+            self._neural_net.load_state_dict(self._best_model_state_dict_obj)
+        elif model_selection_method == "ratio":
+            self._neural_net.load_state_dict(self._best_model_state_dict_ratio)
+        else:
+            raise NotImplementedError
+        return
+
     def train(
         self,
         num_atoms: int = 10,
