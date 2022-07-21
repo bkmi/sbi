@@ -68,7 +68,10 @@ class MCMCPosterior(NeuralPosterior):
                 Importance-Resampling (SIR). SIR initially samples
                 `init_strategy_num_candidates` from the `proposal`, evaluates all of
                 them under the `potential_fn`, and then resamples the initial locations
-                with weights proportional to the `potential_fn`-value.
+                with weights proportional to the `potential_fn`-value. 
+                `delta` requires that the proposal is a tensor with 
+                shape [num_chains, theta_dimension]. Those will be the initial 
+                parameters in the chain.
             init_strategy_num_candidates: Number of candidates to to find init
                 locations in `init_strategy=sir`.
             num_workers: number of cpu cores used to parallelize mcmc
@@ -301,6 +304,9 @@ class MCMCPosterior(NeuralPosterior):
             return lambda: sir(proposal, potential_fn, transform=transform, **kwargs)
         elif init_strategy == "latest_sample":
             latest_sample = IterateParameters(self._mcmc_init_params, **kwargs)
+            return latest_sample
+        elif init_strategy == "delta":
+            latest_sample = IterateParameters(proposal, **kwargs)
             return latest_sample
         else:
             raise NotImplementedError
