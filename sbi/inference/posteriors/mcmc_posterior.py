@@ -452,7 +452,7 @@ class MCMCPosterior(NeuralPosterior):
         kernels = dict(slice=Slice, hmc=HMC, nuts=NUTS)
 
         sampler = MCMC(
-            kernel=kernels[mcmc_method](potential_fn=potential_function),
+            kernel=kernels[mcmc_method](potential_fn=potential_function),  # kernel=kernels[mcmc_method](potential_fn=potential_function, trajectory_length=0.01, step_size=.01, adapt_step_size=False),  TODO set this
             num_samples=(thin * num_samples) // num_chains + num_chains,
             warmup_steps=warmup_steps,
             initial_params={"": initial_params},
