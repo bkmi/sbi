@@ -64,21 +64,23 @@ def rejection_sample(
         )
 
     samples_to_find_max = proposal.sample((num_samples_to_find_max,))
+    samples_to_find_max = torch.atleast_2d(samples_to_find_max.squeeze())
 
     # Define a potential as the ratio between target distribution and proposal.
     def potential_over_proposal(theta):
         return potential_fn(theta) - proposal.log_prob(theta)
 
     # Search for the maximum of the ratio.
-    _, max_log_ratio = gradient_ascent(
-        potential_fn=potential_over_proposal,
-        inits=samples_to_find_max,
-        theta_transform=theta_transform,
-        num_iter=num_iter_to_find_max,
-        learning_rate=0.01,
-        num_to_optimize=max(1, int(num_samples_to_find_max / 10)),
-        show_progress_bars=False,
-    )
+    with torch.set_grad_enabled(True):
+        _, max_log_ratio = gradient_ascent(
+            potential_fn=potential_over_proposal,
+            inits=samples_to_find_max,
+            theta_transform=theta_transform,
+            num_iter=num_iter_to_find_max,
+            learning_rate=0.01,
+            num_to_optimize=max(1, int(num_samples_to_find_max / 10)),
+            show_progress_bars=False,
+        )
 
     if m < 1.0:
         warnings.warn("A value of m < 1.0 will lead to systematically wrong results.")

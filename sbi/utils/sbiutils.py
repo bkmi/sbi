@@ -867,12 +867,14 @@ def gradient_ascent(
                     log_probs_of_optimized = potential_fn(
                         theta_transform.inv(optimize_inits)
                     )
-                    best_theta_iter = optimize_inits[  # type: ignore
+                    best_theta_iter = torch.atleast_2d(
+                        optimize_inits[  # type: ignore
+                            torch.argmax(log_probs_of_optimized)
+                        ]
+                    )
+                    best_log_prob_iter = log_probs_of_optimized[
                         torch.argmax(log_probs_of_optimized)
                     ]
-                    best_log_prob_iter = potential_fn(
-                        theta_transform.inv(best_theta_iter)
-                    )
                     if best_log_prob_iter > best_log_prob_overall:
                         best_theta_overall = best_theta_iter.detach().clone()
                         best_log_prob_overall = best_log_prob_iter.detach().clone()
