@@ -858,7 +858,7 @@ def gradient_ascent(
             optimizer.zero_grad()
             probs = potential_fn(theta_transform.inv(optimize_inits)).squeeze()
             loss = -probs.sum()
-            loss.backward()
+            loss.backward(retain_graph=True)
             optimizer.step()
 
             with torch.no_grad():
@@ -892,10 +892,19 @@ def gradient_ascent(
                 max_val = best_log_prob_overall
 
             iter_ += 1
+            
+        # free memory
+        loss.backward()
+        optimizer.zero_grad()
 
     except KeyboardInterrupt:
         interruption = f"Optimization was interrupted after {iter_} iterations. "
         print(interruption + interruption_note)
+
+        # free memory
+        loss.backward()
+        optimizer.zero_grad()
+
         return argmax_, max_val  # type: ignore
 
     return theta_transform.inv(best_theta_overall), max_val  # type: ignore
