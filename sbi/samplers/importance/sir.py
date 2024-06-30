@@ -14,7 +14,7 @@ def sampling_importance_resampling(
     num_candidate_samples: int = 32,
     max_sampling_batch_size: int = 10_000,
     show_progress_bars: bool = False,
-    device: str = "cpu",
+    # device: str = "cpu",
     **kwargs,
 ) -> Tensor:
     """Return samples obtained with sampling importance resampling (SIR).
@@ -58,7 +58,8 @@ def sampling_importance_resampling(
             )
             log_weights = log_weights.reshape(batch_size, num_candidate_samples)
             weights = log_weights.softmax(-1).cumsum(-1)
-            uniform_decision = torch.rand(batch_size, 1, device=device)
+            # uniform_decision = torch.rand(batch_size, 1, device=device)
+            uniform_decision = torch.rand(batch_size, 1, device=weights.device)
             mask = torch.cumsum(weights >= uniform_decision, -1) == 1
             samples = thetas.reshape(batch_size, num_candidate_samples, -1)[mask]
             selected_samples.append(samples)
